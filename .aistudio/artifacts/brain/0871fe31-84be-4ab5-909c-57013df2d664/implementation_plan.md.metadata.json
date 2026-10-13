@@ -1,0 +1,6 @@
+{
+  "summary": "Plano de implementação detalhado para a plataforma SaaS B2B de prospecção de empresas sem site no Google Maps (LeadMaps Pro). Inclui tema roxo e preto, tela inicial minimalista com busca por área e nicho, integração com Google Maps / Places API, enriquecimento de contatos (WhatsApp/Instagram), CRM Kanban de abordagem, gerador de propostas e auditorias, paywall Stripe com modo degustação e dashboard de métricas em tempo real.",
+  "updatedAt": "2026-10-13T19:15:02.163558366Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

@@ -1,0 +1,6 @@
+{
+  "name": "LeadMaps Pro - Prospecção B2B de Sites",
+  "description": "Plataforma SaaS para encontrar empresas sem site no Google Maps, enriquecer com WhatsApp/Instagram e gerenciar vendas via CRM Kanban integrado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
