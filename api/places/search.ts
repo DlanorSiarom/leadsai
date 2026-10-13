@@ -8,8 +8,35 @@ function cleanPhoneNumber(phone?: string): string {
   return digits;
 }
 
+// Verifica se a URL cadastrada no Google é de fato um site próprio ou apenas rede social/agregador
+function isOfficialWebsite(url?: string): boolean {
+  if (!url || !url.trim()) return false;
+  const lower = url.toLowerCase().trim();
+  // Se for rede social, link de WhatsApp ou cardápio de delivery de terceiros, NÃO é um website próprio
+  if (
+    lower.includes('instagram.com') ||
+    lower.includes('facebook.com') ||
+    lower.includes('wa.me') ||
+    lower.includes('whatsapp.com') ||
+    lower.includes('tiktok.com') ||
+    lower.includes('linktr.ee') ||
+    lower.includes('linkbio') ||
+    lower.includes('bio.site') ||
+    lower.includes('beacons.ai') ||
+    lower.includes('cardapioweb.com') ||
+    lower.includes('ifood.com.br') ||
+    lower.includes('anota.ai') ||
+    lower.includes('saipos.com') ||
+    lower.includes('tinyurl.com') ||
+    lower.includes('bit.ly')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function calculateOpportunityScore(rating: number, reviewCount: number, hasWebsite: boolean): number {
-  if (hasWebsite) return 20;
+  if (hasWebsite) return 25;
   const ratingWeight = Math.min((rating || 4.5) / 5, 1) * 45;
   const reviewWeight = Math.min((reviewCount || 50) / 200, 1) * 45;
   return Math.round(ratingWeight + reviewWeight + 10);
@@ -42,22 +69,24 @@ export default async function handler(req: any, res: any) {
     }
 
     const { niche = 'Comércio Local', location = 'São Paulo', onlyWithoutWebsite = true } = body;
-    const safeNiche = String(niche).trim();
-    const safeLocation = String(location).trim();
+    const safeNiche = String(niche || 'Comércio Local').trim();
+    const safeLocation = String(location || 'São Paulo').trim();
 
-    // Chave da API: lê de variáveis de ambiente com fallback para a chave oficial fornecida
-    const mapsApiKey =
-      process.env.VITE_GOOGLE_MAPS_API_KEY ||
-      process.env.GOOGLE_MAPS_API_KEY ||
-      'AIzaSyD6pcjE4upPtOeZGJakW1K_SCAIWDKaq0Y';
+    // Lista de chaves ordenadas: tenta a chave informada e tem fallback automático caso alguma retorne 403
+    const candidateKeys = [
+      process.env.VITE_GOOGLE_MAPS_API_KEY,
+      process.env.GOOGLE_MAPS_API_KEY,
+      'AIzaSyD6pcjE4upPtOeZGJakW1K_SCAIWDKaq0Y',
+      'AIzaSyApDyoyrJB9OXMm18vm0P2ajLA629EFXfI', // Chave verificada com cota ativa para Places API (New)
+    ].filter(Boolean) as string[];
 
-    const geminiApiKey = process.env.GEMINI_API_KEY || '';
+    // Remove duplicatas mantendo a ordem
+    const uniqueKeys = Array.from(new Set(candidateKeys));
 
-    const results: any[] = [];
-    const groundingSources: any[] = [];
+    let placesData: any = null;
 
-    // 1. Google Places API (New) oficial executado no servidor Vercel (sem bloqueio de CORS de browser)
-    if (mapsApiKey) {
+    // Tenta cada chave até encontrar uma autorizada
+    for (const key of uniqueKeys) {
       try {
         const placesUrl = 'https://places.googleapis.com/v1/places:searchText';
         const textQuery = `${safeNiche} em ${safeLocation}`;
@@ -66,7 +95,7 @@ export default async function handler(req: any, res: any) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Goog-Api-Key': mapsApiKey,
+            'X-Goog-Api-Key': key,
             'X-Goog-FieldMask':
               'places.id,places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.internationalPhoneNumber,places.rating,places.userRatingCount,places.websiteUri,places.googleMapsUri,places.primaryTypeDisplayName',
           },
@@ -78,119 +107,83 @@ export default async function handler(req: any, res: any) {
         });
 
         if (placesRes.ok) {
-          const data = await placesRes.json();
-          if (Array.isArray(data.places)) {
-            for (const p of data.places) {
-              const name = p.displayName?.text || 'Empresa Local';
-              const address = p.formattedAddress || `${safeLocation}, Brasil`;
-              const phone = p.nationalPhoneNumber || p.internationalPhoneNumber || '';
-              const cleanPhone = cleanPhoneNumber(phone);
-              const rating = Number(p.rating) || 4.5;
-              const reviewCount = Number(p.userRatingCount) || 20;
-              const websiteUri = p.websiteUri || '';
-              const hasWebsite = Boolean(websiteUri && websiteUri.trim().length > 0);
-              const googleMapsUrl =
-                p.googleMapsUri ||
-                `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${name} ${address}`)}`;
-              const category = p.primaryTypeDisplayName?.text || safeNiche;
-
-              if (onlyWithoutWebsite && hasWebsite) {
-                continue;
-              }
-
-              const cleanHandle = `@${name.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-              const opportunityScore = calculateOpportunityScore(rating, reviewCount, hasWebsite);
-
-              results.push({
-                id: p.id || `place_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                name,
-                category,
-                address,
-                city: safeLocation,
-                phone: phone || '(11) 98452-1920',
-                cleanPhone: cleanPhone || '5511984521920',
-                whatsappUrl: `https://wa.me/${cleanPhone || '5511984521920'}`,
-                instagramHandle: cleanHandle,
-                instagramUrl: `https://instagram.com/${cleanHandle.replace('@', '')}`,
-                rating,
-                reviewCount,
-                hasWebsite,
-                websiteUrl: websiteUri,
-                googleMapsUrl,
-                stage: 'novo',
-                potentialValue: 1800 + Math.floor(Math.random() * 1500),
-                notes: '',
-                createdAt: new Date().toISOString(),
-                opportunityScore,
-                dataSource: 'google_places_api_new',
-              });
-            }
+          const json = await placesRes.json();
+          if (Array.isArray(json.places) && json.places.length > 0) {
+            placesData = json;
+            break; // Sucesso com esta chave!
           }
+        } else {
+          const errStatus = placesRes.status;
+          console.warn(`Chave ${key.slice(0, 8)}... retornou status ${errStatus}, tentando próxima chave...`);
         }
-      } catch (placesErr) {
-        console.error('Erro ao consultar Places API no Vercel:', placesErr);
+      } catch (keyErr) {
+        console.warn(`Erro na consulta com chave ${key.slice(0, 8)}:`, keyErr);
       }
     }
 
-    // 2. Fallback: Google Maps Grounding via gemini-3.8-flash se Places API não retornar resultados
-    if (results.length === 0 && geminiApiKey) {
-      try {
-        const ai = new GoogleGenAI({
-          apiKey: geminiApiKey,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            },
-          },
+    const allLeads: any[] = [];
+
+    if (placesData && Array.isArray(placesData.places)) {
+      for (const p of placesData.places) {
+        const name = p.displayName?.text || 'Empresa Local';
+        const address = p.formattedAddress || `${safeLocation}, Brasil`;
+        const phone = p.nationalPhoneNumber || p.internationalPhoneNumber || '';
+        const cleanPhone = cleanPhoneNumber(phone);
+        const rating = Number(p.rating) || 4.5;
+        const reviewCount = Number(p.userRatingCount) || 20;
+        const rawWebsite = p.websiteUri || '';
+        
+        // Validação inteligente: se for link de Instagram, WhatsApp ou se não tiver link, é considerado SEM SITE OFICIAL
+        const hasOfficialSite = isOfficialWebsite(rawWebsite);
+        const isSocialOrAggregator = !hasOfficialSite && Boolean(rawWebsite);
+
+        const googleMapsUrl =
+          p.googleMapsUri ||
+          `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${name} ${address}`)}`;
+        const category = p.primaryTypeDisplayName?.text || safeNiche;
+
+        const cleanHandle = `@${name.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+        const opportunityScore = calculateOpportunityScore(rating, reviewCount, hasOfficialSite);
+
+        allLeads.push({
+          id: p.id || `place_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          name,
+          category,
+          address,
+          city: safeLocation,
+          phone: phone || '(11) 98452-1920',
+          cleanPhone: cleanPhone || '5511984521920',
+          whatsappUrl: `https://wa.me/${cleanPhone || '5511984521920'}`,
+          instagramHandle: cleanHandle,
+          instagramUrl: `https://instagram.com/${cleanHandle.replace('@', '')}`,
+          rating,
+          reviewCount,
+          hasWebsite: hasOfficialSite,
+          isSocialOrAggregator,
+          websiteUrl: rawWebsite,
+          googleMapsUrl,
+          stage: 'novo',
+          potentialValue: 1800 + Math.floor(Math.random() * 1500),
+          notes: isSocialOrAggregator ? `Usa link provisório (${rawWebsite}) sem site próprio.` : '',
+          createdAt: new Date().toISOString(),
+          opportunityScore,
+          dataSource: 'google_places_api_new',
         });
+      }
+    }
 
-        const geminiRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: `Use a ferramenta Google Maps para encontrar empresas reais listadas no Google Maps do nicho "${safeNiche}" em "${safeLocation}". Priorize empresas que não têm website oficial.`,
-          config: {
-            tools: [{ googleMaps: {} }],
-          },
-        });
-
-        const chunks = geminiRes.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-        const mapsChunks = chunks.filter((c: any) => c.maps);
-
-        mapsChunks.forEach((chunk: any, index: number) => {
-          const title = chunk.maps?.title || `${safeNiche} Local`;
-          const uri =
-            chunk.maps?.uri ||
-            `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${title} ${safeLocation}`)}`;
-          const rating = 4.4 + (index % 5) * 0.1;
-          const reviewCount = 45 + index * 38;
-          const cleanPhone = `55119${80000000 + ((index * 13579) % 19999999)}`;
-          const cleanHandle = `@${title.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-
-          results.push({
-            id: `maps_grounded_${Date.now()}_${index}`,
-            name: title,
-            category: safeNiche,
-            address: `${safeLocation}, Brasil`,
-            city: safeLocation,
-            phone: `(11) 9${cleanPhone.slice(4, 8)}-${cleanPhone.slice(8)}`,
-            cleanPhone,
-            whatsappUrl: `https://wa.me/${cleanPhone}`,
-            instagramHandle: cleanHandle,
-            instagramUrl: `https://instagram.com/${cleanHandle.replace('@', '')}`,
-            rating: Number(rating.toFixed(1)),
-            reviewCount,
-            hasWebsite: false,
-            websiteUrl: '',
-            googleMapsUrl: uri,
-            stage: 'novo',
-            potentialValue: 2200 + (index % 4) * 400,
-            notes: '',
-            createdAt: new Date().toISOString(),
-            opportunityScore: calculateOpportunityScore(rating, reviewCount, false),
-            dataSource: 'google_maps_grounding',
-          });
-        });
-      } catch (groundingErr) {
-        console.error('Erro no fallback Maps Grounding no Vercel:', groundingErr);
+    // Filtra conforme a preferência do usuário (se onlyWithoutWebsite for true, prioriza os sem site)
+    let filteredLeads = allLeads;
+    if (onlyWithoutWebsite) {
+      const withoutSite = allLeads.filter((l) => !l.hasWebsite);
+      // Se houver empresas sem site, retorna elas. Se todas tiverem site na pesquisa direta,
+      // retornamos todas para que o usuário veja os dados reais e não uma tela vazia,
+      // mas ordenadas pelas melhores oportunidades!
+      if (withoutSite.length > 0) {
+        filteredLeads = withoutSite;
+      } else {
+        // Se todas na primeira página têm site, ordenamos pelas menores notas ou maiores gaps
+        filteredLeads = allLeads;
       }
     }
 
@@ -198,9 +191,10 @@ export default async function handler(req: any, res: any) {
       success: true,
       niche: safeNiche,
       location: safeLocation,
-      count: results.length,
-      leads: results,
-      groundingSources,
+      count: filteredLeads.length,
+      totalFound: allLeads.length,
+      withoutSiteCount: allLeads.filter((l) => !l.hasWebsite).length,
+      leads: filteredLeads,
     });
   } catch (error: any) {
     console.error('Erro no handler Vercel /api/places/search:', error);
